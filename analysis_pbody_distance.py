@@ -84,6 +84,21 @@ def compute_distances(pbody_centroids, mask, pixel_size_um):
         distances.append(d * pixel_size_um)
     return distances
 
+def summarize_results(csv_path="pbody_distances.csv"):
+    df = pd.read_csv(csv_path)
+    summary = (
+        df.groupby("image")
+          .agg(
+              mean_dist_nucleus=("distance_to_nucleus_um", "mean"),
+              mean_dist_mito=("distance_to_mitochondria_um", "mean"),
+              n_pbody=("pbody_id", "count")
+          )
+          .reset_index()
+    )
+    summary.to_csv("summary_distances.csv", index=False)
+    print("✅ Saved summarized results to summary_distances.csv")
+
+
 # ------------------------------------------------------------
 # Main driver: process all images in folder
 # ------------------------------------------------------------
