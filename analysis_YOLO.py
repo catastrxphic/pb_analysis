@@ -9,7 +9,7 @@ import optparse as opt
 from scipy.spatial import distance
 from models.experimental import attempt_load
 from utils.datasets import LoadImages
-from utils.general import check_img_size, non_mas_suppression, scale_coords
+from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.torch_utils import select_device, time_synchronized
 
 # ______________ Config ___________
