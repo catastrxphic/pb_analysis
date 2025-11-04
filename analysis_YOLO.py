@@ -7,10 +7,25 @@ import pandas as pd
 import pathlib as Patch
 import optparse as opt
 from scipy.spatial import distance
+import sys
+
+
+
+# ensure yolov7 package is importable when running this script from the repo root or other CWDs
+YOLOV7_DIR = Patch.Path(__file__).resolve().parent / "yolov7"
+if str(YOLOV7_DIR) not in sys.path:
+    sys.path.insert(0, str(YOLOV7_DIR))
+
+import torch.serialization
+from models.yolo import Model
+torch.serialization.add_safe_globals([Model])
+
 from models.experimental import attempt_load
 from utils.datasets import LoadImages
 from utils.general import check_img_size, non_max_suppression, scale_coords
 from utils.torch_utils import select_device, time_synchronized
+
+
 
 # ______________ Config ___________
 PIXEL_SIZE_UM = 1.0  # change when known
@@ -40,10 +55,13 @@ def compute_distances(pbody_centroids, target_centroids, pixel_size_um = 1.0):
     return distances 
 
 # _____________ YOLO detection analysis _____________
-def analyze_with_yolo(weights, source, device='cpu', img_size= opt.source, group_name= "GX"):
+def analyze_with_yolo(weights, source, device='cpu', img_size= 640, group_name= "GX"):
     device = select_device(device)
     half = device.type  != 'cpu'
-    model = attempt_load(weights, map_location = device)
+
+    ckpt = torch.load(weights, map_location=device, weights_only=False)  # load checkpoint
+    model = ckpt['model'].float()
+    # model = attempt_load(weights, map_location = device)
     stride = int(model.stride.max())
     img_size = check_img_size(img_size, s=stride)
 
