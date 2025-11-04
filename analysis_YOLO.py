@@ -8,7 +8,7 @@ import pathlib as Patch
 import optparse as opt
 from scipy.spatial import distance
 import sys
-
+import glob
 
 
 # ensure yolov7 package is importable when running this script from the repo root or other CWDs
@@ -55,20 +55,33 @@ def compute_distances(pbody_centroids, target_centroids, pixel_size_um = 1.0):
     return distances 
 
 # _____________ YOLO detection analysis _____________
-def analyze_with_yolo(weights, source, device='cpu', img_size= 640, group_name= "GX"):
-    device = select_device(device)
-    half = device.type  != 'cpu'
+def analyze_with_yolo(weights, source, device='cpu', img_size=640, group_name="GX"):
+    import glob  # ensure it's imported
 
-    ckpt = torch.load(weights, map_location=device, weights_only=False)  # load checkpoint
-    model = ckpt['model'].float()
-    # model = attempt_load(weights, map_location = device)
+    device = select_device(device)
+    half = device.type != 'cpu'
+
+    # --- Load model ---
+    print(f"🔍 Loading model from: {weights}")
+    model = attempt_load(weights, map_location=device)
     stride = int(model.stride.max())
     img_size = check_img_size(img_size, s=stride)
 
     if half:
-        model.half
+        model.half()
 
-    dataset = LoadImages(source, img_size = img_size, stride=stride)
+    # --- Recursively find all images in nested subfolders ---
+    pattern = os.path.join(source, '**', '*.*')
+    image_extensions = ('.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng', '.webp', '.mpo')
+    image_files = [f for f in glob.glob(pattern, recursive=True) if f.lower().endswith(image_extensions)]
+
+    if not image_files:
+        raise FileNotFoundError(f"❌ No images found in {source}")
+
+    # Use recursive pattern so YOLO can handle all subfolders
+    dataset = LoadImages(os.path.join(source, '**', '*.*'), img_size=img_size, stride=stride)
+
+    # --- Set up class colors & names ---
     names = model.module.names if hasattr(model, 'module') else model.names
     colors = [(255, 255, 0), (0, 255, 0), (0, 0, 255)]  # BGR for P-body, Nucleus, Mitochondria
 
@@ -76,15 +89,16 @@ def analyze_with_yolo(weights, source, device='cpu', img_size= 640, group_name= 
     save_dir = Patch.Path(DATA_OUTPUT_DIR) / f"{group_name}_edited"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Run inference ---
     t0 = time.time()
-    for path, img, im0s in dataset:
+    for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()
         img /= 255.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
-        # inference
+        # Inference
         with torch.no_grad():
             pred = model(img)[0]
         pred = non_max_suppression(pred, 0.25, 0.45)
@@ -101,40 +115,44 @@ def analyze_with_yolo(weights, source, device='cpu', img_size= 640, group_name= 
                     cls = int(cls)
                     centroid = get_centroid_from_bbox(xyxy)
 
-                    if cls == 0:  # P-body
+                    if cls == 0:
                         pbody_centroids.append(centroid)
-                    elif cls == 1:  # Nucleus
+                    elif cls == 1:
                         nucleus_centroids.append(centroid)
-                    elif cls == 2:  # Mitochondria
+                    elif cls == 2:
                         mito_centroids.append(centroid)
 
-                    # draw bounding boxes
+                    # Draw bounding boxes
                     label = f"{names[cls]} {conf:.2f}"
                     color = colors[cls]
-                    cv2.rectangle(im0, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), color, 1)
-                    cv2.putText(im0, label, (int(xyxy[0]), int(xyxy[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    cv2.rectangle(im0, (int(xyxy[0]), int(xyxy[1])),
+                                  (int(xyxy[2]), int(xyxy[3])), color, 1)
+                    cv2.putText(im0, label, (int(xyxy[0]), int(xyxy[1]) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-            # compute distances
+            # Compute distances
             dist_nucleus = compute_distances(pbody_centroids, nucleus_centroids, PIXEL_SIZE_UM)
             dist_mito = compute_distances(pbody_centroids, mito_centroids, PIXEL_SIZE_UM)
 
-            # save annotated images
+            # Save annotated images
             save_path = save_dir / base_name
             cv2.imwrite(str(save_path), im0)
 
             for i, (dn, dm) in enumerate(zip(dist_nucleus, dist_mito)):
                 results.append((group_name, base_name, i + 1, dn, dm))
 
-    # save CSV
+    # --- Save CSV ---
     csv_name = f"{group_name}_analysis_distance.csv"
     csv_path = os.path.join(DATA_OUTPUT_DIR, csv_name)
-    df = pd.DataFrame(results, columns=["group", "image", "pbody_id", "distance_to_nucleus_um", "distance_to_mitochondria_um"])
+    df = pd.DataFrame(results, columns=["group", "image", "pbody_id",
+                                        "distance_to_nucleus_um", "distance_to_mitochondria_um"])
     df.to_csv(csv_path, index=False)
     print(f"✅ Analysis complete for {group_name}. Results saved to {csv_path}")
 
-    # summary 
+    # --- Summarize results ---
     summarize_results(csv_path)
-    print( "Processing done for group {group_name} in {time.time() - t0:.2f} seconds.")
+    print(f"🏁 Processing done for group {group_name} in {time.time() - t0:.2f} seconds.")
+
 
 
 # ____________ Summarize ____________
