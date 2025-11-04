@@ -150,5 +150,5 @@ if __name__ == "__main__":
         print(f"\n🧬 Processing group: {group_name}")
         analyze_with_yolo(weights, group_path, device=device, group_name=group_name)
 
-    print("\nAll groups processed succesfully.")
+    print("\nAll groups processed succesfully")
 
