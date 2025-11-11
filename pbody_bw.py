@@ -6,8 +6,8 @@ import pandas as pd
 
 # ---------- CONFIG ----------
 PIXEL_SIZE_UM = 1.0       # set to real microns per pixel if known
-RESULTS_ROOT = "results"  # will contain per-group subfolders with per-image Excel files
-DATA_OUTPUT_DIR = "data"  # optional top-level CSVs per medicine (kept for convenience)
+RESULTS_ROOT = "results2"  # will contain per-group subfolders with per-image Excel files
+DATA_OUTPUT_DIR = "data2"  # optional top-level CSVs per medicine (kept for convenience)
 
 # ---------- UTILITIES ----------
 def centroid_from_contour(contour):
@@ -33,26 +33,61 @@ def min_distances(points, targets):
     return mins
 
 # ---------- DETECTION FUNCTIONS ----------
+# def detect_pbodies_from_binary(gray):
+#     """
+#     pbodies: expects a black/white layer in the image (grayscale).
+#     Uses Otsu to handle variable brightness automatically.
+#     Returns list of centroids and contours.
+#     """
+#     # Otsu thresholding to get binary pbody mask
+#     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+#     # optional: remove small noise
+#     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+#     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+#     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#     centroids = []
+#     kept_contours = []
+#     for c in contours:
+#         if cv2.contourArea(c) < 6:  # filter tiny areas (tune if needed)
+#             continue
+#         kept_contours.append(c)
+#         centroids.append(centroid_from_contour(c))
+#     return centroids, kept_contours, mask
+
 def detect_pbodies_from_binary(gray):
     """
-    pbodies: expects a black/white layer in the image (grayscale).
-    Uses Otsu to handle variable brightness automatically.
-    Returns list of centroids and contours.
+    Detect P-bodies using grayscale binary mask with adaptive cleaning.
+    Returns centroids, kept_contours, and mask.
     """
-    # Otsu thresholding to get binary pbody mask
-    _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # optional: remove small noise
+    # Apply Gaussian blur to reduce noise before thresholding
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Adaptive Otsu thresholding
+    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Invert mask if needed (ensure pbodies = white)
+    if np.mean(mask[mask > 0]) < 128:
+        mask = cv2.bitwise_not(mask)
+    
+    # Morphological cleanup (remove noise and small connections)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    
+    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    centroids = []
-    kept_contours = []
+    
+    centroids, kept_contours = [], []
     for c in contours:
-        if cv2.contourArea(c) < 6:  # filter tiny areas (tune if needed)
+        area = cv2.contourArea(c)
+        # Filter: ignore too small or too large blobs (tunable)
+        if area < 20 or area > 1500:
             continue
         kept_contours.append(c)
         centroids.append(centroid_from_contour(c))
+    
     return centroids, kept_contours, mask
+
 
 def detect_nuclei_from_blue(img_bgr):
     """Detect nuclei using blue channel (BGR ordering). Returns centroids, contours, mask."""
