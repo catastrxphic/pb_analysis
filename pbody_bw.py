@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 
 # ---------- CONFIG ----------
-PIXEL_SIZE_UM = 1.0       # set to real microns per pixel if known
-RESULTS_ROOT = "results2"  # will contain per-group subfolders with per-image Excel files
-DATA_OUTPUT_DIR = "data2"  # optional top-level CSVs per medicine (kept for convenience)
+PIXEL_SIZE_UM = 1.0       # pixel micrometer conversion from microscope
+RESULTS_ROOT = "results2"  # result storage
+DATA_OUTPUT_DIR = "data2"  #  top-level CSVs per medicine 
 
 # ---------- UTILITIES ----------
 def centroid_from_contour(contour):
@@ -32,28 +32,6 @@ def min_distances(points, targets):
     mins = np.sqrt(d2.min(axis=1))
     return mins
 
-# ---------- DETECTION FUNCTIONS ----------
-# def detect_pbodies_from_binary(gray):
-#     """
-#     pbodies: expects a black/white layer in the image (grayscale).
-#     Uses Otsu to handle variable brightness automatically.
-#     Returns list of centroids and contours.
-#     """
-#     # Otsu thresholding to get binary pbody mask
-#     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-#     # optional: remove small noise
-#     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-#     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
-#     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#     centroids = []
-#     kept_contours = []
-#     for c in contours:
-#         if cv2.contourArea(c) < 6:  # filter tiny areas (tune if needed)
-#             continue
-#         kept_contours.append(c)
-#         centroids.append(centroid_from_contour(c))
-#     return centroids, kept_contours, mask
-
 def detect_pbodies_from_binary(gray):
     """
     Detect P-bodies using grayscale binary mask with adaptive cleaning.
@@ -72,7 +50,8 @@ def detect_pbodies_from_binary(gray):
     # Morphological cleanup (remove noise and small connections)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    
     
     # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -81,7 +60,7 @@ def detect_pbodies_from_binary(gray):
     for c in contours:
         area = cv2.contourArea(c)
         # Filter: ignore too small or too large blobs (tunable)
-        if area < 20 or area > 1500:
+        if area < 2 or area > 1500:
             continue
         kept_contours.append(c)
         centroids.append(centroid_from_contour(c))
@@ -99,7 +78,7 @@ def detect_nuclei_from_blue(img_bgr):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centroids, kept = [], []
     for c in contours:
-        if cv2.contourArea(c) < 8:
+        if cv2.contourArea(c) < 3:
             continue
         kept.append(c)
         centroids.append(centroid_from_contour(c))
@@ -119,7 +98,7 @@ def detect_mito_from_purple(img_bgr):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     centroids, kept = [], []
     for c in contours:
-        if cv2.contourArea(c) < 8:
+        if cv2.contourArea(c) < 3:
             continue
         kept.append(c)
         centroids.append(centroid_from_contour(c))
@@ -131,7 +110,9 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
     if img is None:
         raise RuntimeError(f"Cannot read image {image_path}")
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = img[:, :, 1]  # use green channel instead of grayscale
+
 
     # detect pbodies (binary layer)
     p_centroids, p_contours, p_mask = detect_pbodies_from_binary(gray)
@@ -232,7 +213,7 @@ def process_parent_folder(parent_folder):
                 if rows:
                     pd.DataFrame(rows).to_excel(image_out_file, index=False)
                 else:
-                    # write empty dataframe with headers (so you have a file even if no pbodies)
+                    # write empty dataframe with headers (so you have a file even if no pbodies) 
                     cols = ["image", "pbody_number", "dist_nuclei", "dist_mito", "nuclei_std", "mito_std", "medicine", "group"]
                     pd.DataFrame(columns=cols).to_excel(image_out_file, index=False)
 
