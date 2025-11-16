@@ -60,7 +60,7 @@ def detect_pbodies_from_binary(gray):
     for c in contours:
         area = cv2.contourArea(c)
         # Filter: ignore too small or too large blobs (tunable)
-        if area < 2 or area > 1500:
+        if area < 0 or area > 2000:
             continue
         kept_contours.append(c)
         centroids.append(centroid_from_contour(c))
