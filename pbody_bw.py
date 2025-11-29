@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 
 # ---------- CONFIG ----------
-PIXEL_SIZE_UM = 1.0       # pixel micrometer conversion from microscope
-RESULTS_ROOT = "results2"  # result storage
-DATA_OUTPUT_DIR = "data2"  #  top-level CSVs per medicine 
+PIXEL_SIZE_UM = 0.1625       # pixel micrometer conversion from microscope
+RESULTS_ROOT = "results2"    # result storage
+DATA_OUTPUT_DIR = "data2"    # top-level CSVs / summary Excels per medicine & global
 
 # ---------- UTILITIES ----------
 def centroid_from_contour(contour):
@@ -32,30 +32,81 @@ def min_distances(points, targets):
     mins = np.sqrt(d2.min(axis=1))
     return mins
 
+# ---------- NEW: DRAW DISTANCE LINES ----------
+def draw_distance_lines(img, p_centroids, n_centroids, m_centroids, d_to_n, d_to_m, save_path):
+    """
+    Draws exactly one line from each p-body to its nearest nucleus (blue)
+    and one line from each p-body to its nearest mitochondrion (purple),
+    labels distances in micrometers, and saves the combined image to save_path.
+    """
+    vis = img.copy()
+    h, w = vis.shape[:2]
+
+    p = np.array(p_centroids) if len(p_centroids) > 0 else np.empty((0,2))
+    n = np.array(n_centroids) if len(n_centroids) > 0 else np.empty((0,2))
+    m = np.array(m_centroids) if len(m_centroids) > 0 else np.empty((0,2))
+
+    for i, (px, py) in enumerate(p):
+        px_i, py_i = int(round(px)), int(round(py))
+
+        # Nearest nucleus (BLUE)
+        if n.size > 0:
+            # compute distances to all nuclei and pick nearest
+            dists_n = np.sqrt(((n - np.array([px, py])) ** 2).sum(axis=1))
+            nn_idx = int(np.argmin(dists_n))
+            nx, ny = int(round(n[nn_idx, 0])), int(round(n[nn_idx, 1]))
+            # draw line
+            cv2.line(vis, (px_i, py_i), (nx, ny), (255, 0, 0), 1)
+            # label distance if available
+            if d_to_n.size > i and not np.isnan(d_to_n[i]):
+                label = f"{d_to_n[i]:.2f} μm"
+                midx, midy = (px_i + nx) // 2, (py_i + ny) // 2
+                # add small background rectangle for readability
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                bx1, by1 = max(0, midx - 2), max(0, midy - th - 2)
+                bx2, by2 = min(w-1, midx + tw + 2), min(h-1, midy + 2)
+                cv2.rectangle(vis, (bx1, by1), (bx2, by2), (0,0,0), -1)
+                cv2.putText(vis, label, (midx, midy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        # Nearest mitochondrion (PURPLE)
+        if m.size > 0:
+            dists_m = np.sqrt(((m - np.array([px, py])) ** 2).sum(axis=1))
+            mm_idx = int(np.argmin(dists_m))
+            mx, my = int(round(m[mm_idx, 0])), int(round(m[mm_idx, 1]))
+            # draw line (purple)
+            cv2.line(vis, (px_i, py_i), (mx, my), (255, 0, 255), 1)
+            if d_to_m.size > i and not np.isnan(d_to_m[i]):
+                label = f"{d_to_m[i]:.2f} μm"
+                midx, midy = (px_i + mx) // 2, (py_i + my) // 2
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                bx1, by1 = max(0, midx - 2), max(0, midy - th - 2)
+                bx2, by2 = min(w-1, midx + tw + 2), min(h-1, midy + 2)
+                cv2.rectangle(vis, (bx1, by1), (bx2, by2), (0,0,0), -1)
+                cv2.putText(vis, label, (midx, midy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+
+    # Save combined image
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    cv2.imwrite(save_path, vis)
+
+# ---------- DETECTION FUNCTIONS (unchanged logic) ----------
 def detect_pbodies_from_binary(gray):
     """
     Detect P-bodies using grayscale binary mask with adaptive cleaning.
     Returns centroids, kept_contours, and mask.
     """
-    # Apply Gaussian blur to reduce noise before thresholding
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # Adaptive Otsu thresholding
     _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
+
     # Invert mask if needed (ensure pbodies = white)
     if np.mean(mask[mask > 0]) < 128:
         mask = cv2.bitwise_not(mask)
-    
-    # Morphological cleanup (remove noise and small connections)
+
+    # Morphological cleanup
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=2)
-    # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
-    
-    
-    # Find contours
+
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     centroids, kept_contours = [], []
     for c in contours:
         area = cv2.contourArea(c)
@@ -64,14 +115,12 @@ def detect_pbodies_from_binary(gray):
             continue
         kept_contours.append(c)
         centroids.append(centroid_from_contour(c))
-    
-    return centroids, kept_contours, mask
 
+    return centroids, kept_contours, mask
 
 def detect_nuclei_from_blue(img_bgr):
     """Detect nuclei using blue channel (BGR ordering). Returns centroids, contours, mask."""
     blue = img_bgr[:, :, 0]
-    # Otsu threshold on blue channel
     _, mask = cv2.threshold(blue, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
@@ -87,7 +136,7 @@ def detect_nuclei_from_blue(img_bgr):
 def detect_mito_from_purple(img_bgr):
     """
     Approximate purple by combining red and blue channels.
-    You can tune the blending weights if your purple is more red-leaning.
+    Returns centroids, contours, mask.
     """
     red = img_bgr[:, :, 2].astype(np.float32)
     blue = img_bgr[:, :, 0].astype(np.float32)
@@ -106,13 +155,23 @@ def detect_mito_from_purple(img_bgr):
 
 # ---------- IMAGE ANALYSIS ----------
 def analyze_single_image(image_path, edited_folder, group_name, medicine_name, draw=True):
+    """
+    Analyze one image. Returns:
+      rows (per-pbody detail list),
+      n_pb, n_nuc, n_mito (counts),
+      mean_dn, std_dn, mean_dm, std_dm (per-image summary in micrometers)
+    Also saves:
+      - annotated image (contours) into edited_folder
+      - distance-lines image into edited_folder (<base>_distance_lines.png)
+      - per-image distance summary Excel into edited_folder
+      - per-image detailed Excel (existing behavior) saved by caller
+    """
     img = cv2.imread(image_path)
     if img is None:
         raise RuntimeError(f"Cannot read image {image_path}")
 
-    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = img[:, :, 1]  # use green channel instead of grayscale
-
+    # Use green channel for p-bodies as before
+    gray = img[:, :, 1]
 
     # detect pbodies (binary layer)
     p_centroids, p_contours, p_mask = detect_pbodies_from_binary(gray)
@@ -121,15 +180,18 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
     n_centroids, n_contours, n_mask = detect_nuclei_from_blue(img)
     m_centroids, m_contours, m_mask = detect_mito_from_purple(img)
 
-    # distances (pixels) -> multiply by PIXEL_SIZE_UM if you want micrometers
-    d_to_n = min_distances(p_centroids, n_centroids) * PIXEL_SIZE_UM if len(p_centroids) > 0 else np.array([])
-    d_to_m = min_distances(p_centroids, m_centroids) * PIXEL_SIZE_UM if len(p_centroids) > 0 else np.array([])
+    # distances (pixels) -> convert to micrometers
+    d_to_n_pixels = min_distances(p_centroids, n_centroids) if len(p_centroids) > 0 else np.array([])
+    d_to_m_pixels = min_distances(p_centroids, m_centroids) if len(p_centroids) > 0 else np.array([])
+
+    d_to_n = d_to_n_pixels * PIXEL_SIZE_UM if d_to_n_pixels.size > 0 else np.array([])
+    d_to_m = d_to_m_pixels * PIXEL_SIZE_UM if d_to_m_pixels.size > 0 else np.array([])
 
     # per-image stds (NaN if no pbodies or no targets)
     nuclei_std = np.nan if d_to_n.size == 0 else np.nanstd(d_to_n)
     mito_std = np.nan if d_to_m.size == 0 else np.nanstd(d_to_m)
 
-    # draw annotated image for verification
+    # draw annotated image for verification (existing contour visualization)
     if draw:
         vis = img.copy()
         for c in p_contours:
@@ -143,9 +205,27 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
         # save annotated
         os.makedirs(edited_folder, exist_ok=True)
         base = os.path.basename(image_path)
-        cv2.imwrite(os.path.join(edited_folder, base), vis)
+        annotated_path = os.path.join(edited_folder, base)
+        cv2.imwrite(annotated_path, vis)
 
-    # prepare rows for each pbody
+    # -------- SAVE DISTANCE-LINE VISUALIZATION ----------
+    base = os.path.basename(image_path)
+    distance_img_path = os.path.join(
+        edited_folder,
+        f"{os.path.splitext(base)[0]}_distance_lines.png"
+    )
+    # draw lines using micrometer distances (d_to_n and d_to_m are already in µm)
+    draw_distance_lines(
+        img,
+        p_centroids,
+        n_centroids,
+        m_centroids,
+        d_to_n,
+        d_to_m,
+        distance_img_path
+    )
+
+    # prepare rows for each pbody (existing structure)
     rows = []
     for idx, (cxcy) in enumerate(p_centroids, start=1):
         dn = float(d_to_n[idx - 1]) if d_to_n.size > 0 else np.nan
@@ -161,8 +241,36 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
             "group": ("DMSO" if group_name == "G0" else group_name)
         })
 
-    # if there are zero pbodies, we still write an empty-data row? we will return empty list (no rows)
-    return rows, len(p_centroids), len(n_centroids), len(m_centroids)
+    # --------- SAVE SUMMARY EXCEL (DISTANCE + STD) per image ----------
+    summary_data = {
+        "metric": [
+            "mean_dist_nuclei",
+            "std_dist_nuclei",
+            "mean_dist_mito",
+            "std_dist_mito"
+        ],
+        "value": [
+            float(np.nanmean(d_to_n)) if d_to_n.size > 0 else np.nan,
+            float(np.nanstd(d_to_n)) if d_to_n.size > 0 else np.nan,
+            float(np.nanmean(d_to_m)) if d_to_m.size > 0 else np.nan,
+            float(np.nanstd(d_to_m)) if d_to_m.size > 0 else np.nan
+        ]
+    }
+
+    summary_df = pd.DataFrame(summary_data)
+    summary_out_path = os.path.join(
+        edited_folder,
+        f"{os.path.splitext(os.path.basename(image_path))[0]}_distance_summary.xlsx"
+    )
+    summary_df.to_excel(summary_out_path, index=False)
+
+    # return details & per-image numeric summary (means/stds in µm)
+    mean_dn = float(np.nanmean(d_to_n)) if d_to_n.size > 0 else np.nan
+    std_dn = float(np.nanstd(d_to_n)) if d_to_n.size > 0 else np.nan
+    mean_dm = float(np.nanmean(d_to_m)) if d_to_m.size > 0 else np.nan
+    std_dm = float(np.nanstd(d_to_m)) if d_to_m.size > 0 else np.nan
+
+    return rows, len(p_centroids), len(n_centroids), len(m_centroids), mean_dn, std_dn, mean_dm, std_dm
 
 # ---------- FOLDER WALK & SAVE ----------
 def process_parent_folder(parent_folder):
@@ -171,6 +279,9 @@ def process_parent_folder(parent_folder):
     data_output_dir = os.path.join(os.path.dirname(parent_folder), DATA_OUTPUT_DIR)
     os.makedirs(results_root, exist_ok=True)
     os.makedirs(data_output_dir, exist_ok=True)
+
+    # global accumulator for all images across all groups/medicines
+    all_summary_rows = []
 
     for group_name in sorted(os.listdir(parent_folder)):
         gpath = os.path.join(parent_folder, group_name)
@@ -190,8 +301,10 @@ def process_parent_folder(parent_folder):
             edited_folder = os.path.join(mpath, f"{group_name}_{medicine_name}_editted")
             os.makedirs(edited_folder, exist_ok=True)
 
-            # will collect per-medicine rows (optional saving CSV)
+            # will collect per-medicine rows (original per-pbody rows)
             medicine_rows = []
+            # collect per-medicine image-level summaries (mean/std)
+            med_summary_rows = []
 
             # iterate files in medicine folder
             for fname in sorted(os.listdir(mpath)):
@@ -202,35 +315,69 @@ def process_parent_folder(parent_folder):
                     continue
 
                 try:
-                    rows, n_pb, n_nuc, n_mito = analyze_single_image(fpath, edited_folder, group_name, medicine_name, draw=True)
+                    rows, n_pb, n_nuc, n_mito, mean_dn, std_dn, mean_dm, std_dm = analyze_single_image(
+                        fpath, edited_folder, group_name, medicine_name, draw=True
+                    )
                 except Exception as e:
                     print(f"    ! Failed to process {fname}: {e}")
                     continue
 
-                # save one Excel per image into results/<GROUP>/
+                # save one Excel per image into results/<GROUP>/ (existing behavior)
                 image_base = os.path.splitext(fname)[0]
                 image_out_file = os.path.join(group_results_folder, f"{group_name}_{medicine_name}_{image_base}_analysis.xlsx")
                 if rows:
                     pd.DataFrame(rows).to_excel(image_out_file, index=False)
                 else:
-                    # write empty dataframe with headers (so you have a file even if no pbodies) 
                     cols = ["image", "pbody_number", "dist_nuclei", "dist_mito", "nuclei_std", "mito_std", "medicine", "group"]
                     pd.DataFrame(columns=cols).to_excel(image_out_file, index=False)
 
-                # accumulate per-medicine (optional)
+                # accumulate per-medicine pbody rows (existing)
                 medicine_rows.extend(rows)
+
+                # accumulate per-medicine summary row for this image (image-level summary)
+                img_summary = {
+                    "group": ("DMSO" if group_name == "G0" else group_name),
+                    "medicine": medicine_name,
+                    "image": fname,
+                    "mean_dist_nuclei": mean_dn,
+                    "std_dist_nuclei": std_dn,
+                    "mean_dist_mito": mean_dm,
+                    "std_dist_mito": std_dm
+                }
+                med_summary_rows.append(img_summary)
+                all_summary_rows.append(img_summary)
 
                 print(f"    processed {fname}: pbodies={n_pb}, nuclei={n_nuc}, mito={n_mito}")
 
-            # optional: write per-medicine CSV to data_output_dir
+            # optional: write per-medicine CSV to data_output_dir (existing)
             med_csv = os.path.join(data_output_dir, f"{group_name}_{medicine_name}_analysis_distance.csv")
             if medicine_rows:
                 pd.DataFrame(medicine_rows).to_csv(med_csv, index=False)
             else:
-                # empty CSV with columns
                 cols = ["image", "pbody_number", "dist_nuclei", "dist_mito", "nuclei_std", "mito_std", "medicine", "group"]
                 pd.DataFrame(columns=cols).to_csv(med_csv, index=False)
 
+            # -------- SAVE PER-MEDICINE SUMMARY EXCEL --------
+            med_summary_xlsx = os.path.join(data_output_dir, f"{group_name}_{medicine_name}_summary.xlsx")
+            if med_summary_rows:
+                pd.DataFrame(med_summary_rows).to_excel(med_summary_xlsx, index=False)
+            else:
+                cols = ["group", "medicine", "image",
+                        "mean_dist_nuclei", "std_dist_nuclei",
+                        "mean_dist_mito", "std_dist_mito"]
+                pd.DataFrame(columns=cols).to_excel(med_summary_xlsx, index=False)
+
+    # -------- SAVE GLOBAL SUMMARY (all images) --------
+    global_summary_xlsx = os.path.join(data_output_dir, "all_images_summary.xlsx")
+    if all_summary_rows:
+        pd.DataFrame(all_summary_rows).to_excel(global_summary_xlsx, index=False)
+    else:
+        cols = ["group", "medicine", "image",
+                "mean_dist_nuclei", "std_dist_nuclei",
+                "mean_dist_mito", "std_dist_mito"]
+        pd.DataFrame(columns=cols).to_excel(global_summary_xlsx, index=False)
+
+    print(f"\nGlobal summary saved to: {global_summary_xlsx}")
     print("\nAll processing finished.")
 
 # ---------- ENTRY ----------
