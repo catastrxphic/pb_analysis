@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
+# Imports needed to run the code
 import os
 import cv2
 import numpy as np
 import pandas as pd
 
 # ---------- CONFIG ----------
-PIXEL_SIZE_UM = 0.1625       # pixel micrometer conversion from microscope
-RESULTS_ROOT = "results2"    # result storage
+PIXEL_SIZE_UM = 0.1625       # conversion from micrometer (depends on microscope) to pixel
+RESULTS_ROOT = "results2"    # where the results are to be stored
 DATA_OUTPUT_DIR = "data2"    # top-level CSVs / summary Excels per medicine & global
 
-# ---------- UTILITIES ----------
+# ---------- see the center of a point from a contour or conglomeration ----------
 def centroid_from_contour(contour):
     M = cv2.moments(contour)
     if M.get("m00", 0) == 0:
@@ -17,6 +17,7 @@ def centroid_from_contour(contour):
         return tuple(np.mean(pts, axis=0))
     return (M["m10"] / M["m00"], M["m01"] / M["m00"])
 
+# ---------- calculate minimum distance from one point to another ----------
 def min_distances(points, targets):
     """Return numpy array of min distance from each point to closest target.
        points: (N,2) array-like; targets: (M,2) array-like.
@@ -32,12 +33,12 @@ def min_distances(points, targets):
     mins = np.sqrt(d2.min(axis=1))
     return mins
 
-# ---------- NEW: DRAW DISTANCE LINES ----------
+# ---------- draw distance lines - for double-checking algorithm performance ----------
 def draw_distance_lines(img, p_centroids, n_centroids, m_centroids, d_to_n, d_to_m, save_path):
     """
-    Draws exactly one line from each p-body to its nearest nucleus (blue)
-    and one line from each p-body to its nearest mitochondrion (purple),
-    labels distances in micrometers, and saves the combined image to save_path.
+    Draws one line from each p-body to its nearest nucleus (blue) and one line from each p-body 
+    to its nearest mitochondrion (purple), labels distances in micrometers,
+    they are saved and the combined image to stored in save_path variable
     """
     vis = img.copy()
     h, w = vis.shape[:2]
@@ -88,16 +89,16 @@ def draw_distance_lines(img, p_centroids, n_centroids, m_centroids, d_to_n, d_to
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     cv2.imwrite(save_path, vis)
 
-# ---------- DETECTION FUNCTIONS (unchanged logic) ----------
+# ---------- detect the pbodies from the binary mask ----------
 def detect_pbodies_from_binary(gray):
     """
-    Detect P-bodies using grayscale binary mask with adaptive cleaning.
-    Returns centroids, kept_contours, and mask.
+    pbodies are detected by using grayscale binary mask with adaptive cleaning.
+    function return the centroids, kept_contours, and mask.
     """
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Invert mask if needed (ensure pbodies = white)
+    # invert mask (ensure pbodies = white)
     if np.mean(mask[mask > 0]) < 128:
         mask = cv2.bitwise_not(mask)
 
@@ -110,7 +111,7 @@ def detect_pbodies_from_binary(gray):
     centroids, kept_contours = [], []
     for c in contours:
         area = cv2.contourArea(c)
-        # Filter: ignore too small or too large blobs (tunable)
+        # Filtering blobs by area 
         if area < 0 or area > 2000:
             continue
         kept_contours.append(c)
@@ -118,8 +119,9 @@ def detect_pbodies_from_binary(gray):
 
     return centroids, kept_contours, mask
 
+# ---------- detect the nuclei from the blue channel ----------
 def detect_nuclei_from_blue(img_bgr):
-    """Detect nuclei using blue channel (BGR ordering). Returns centroids, contours, mask."""
+    """Detect nuclei using blue channel (BGR ordering). function returns centroids, contours, mask."""
     blue = img_bgr[:, :, 0]
     _, mask = cv2.threshold(blue, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -133,10 +135,11 @@ def detect_nuclei_from_blue(img_bgr):
         centroids.append(centroid_from_contour(c))
     return centroids, kept, mask
 
+# ---------- detect the mitochondria from purple estimate (purple= red + blue) ---------- 
 def detect_mito_from_purple(img_bgr):
     """
     Approximate purple by combining red and blue channels.
-    Returns centroids, contours, mask.
+    functions returns centroids, contours, mask.
     """
     red = img_bgr[:, :, 2].astype(np.float32)
     blue = img_bgr[:, :, 0].astype(np.float32)
@@ -153,14 +156,14 @@ def detect_mito_from_purple(img_bgr):
         centroids.append(centroid_from_contour(c))
     return centroids, kept, mask
 
-# ---------- IMAGE ANALYSIS ----------
+# ---------- integration of functions to analyze the whole image ----------
 def analyze_single_image(image_path, edited_folder, group_name, medicine_name, draw=True):
     """
-    Analyze one image. Returns:
+    Each image analysis returns:
       rows (per-pbody detail list),
       n_pb, n_nuc, n_mito (counts),
       mean_dn, std_dn, mean_dm, std_dm (per-image summary in micrometers)
-    Also saves:
+    Also stores:
       - annotated image (contours) into edited_folder
       - distance-lines image into edited_folder (<base>_distance_lines.png)
       - per-image distance summary Excel into edited_folder
@@ -208,7 +211,7 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
         annotated_path = os.path.join(edited_folder, base)
         cv2.imwrite(annotated_path, vis)
 
-    # -------- SAVE DISTANCE-LINE VISUALIZATION ----------
+    # -------- save the distance visualization  ----------
     base = os.path.basename(image_path)
     distance_img_path = os.path.join(
         edited_folder,
@@ -241,7 +244,7 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
             "group": ("DMSO" if group_name == "G0" else group_name)
         })
 
-    # --------- SAVE SUMMARY EXCEL (DISTANCE + STD) per image ----------
+    # --------- save for teh summary excel, adds distance and std per image ----------
     summary_data = {
         "metric": [
             "mean_dist_nuclei",
@@ -272,7 +275,7 @@ def analyze_single_image(image_path, edited_folder, group_name, medicine_name, d
 
     return rows, len(p_centroids), len(n_centroids), len(m_centroids), mean_dn, std_dn, mean_dm, std_dm
 
-# ---------- FOLDER WALK & SAVE ----------
+# ---------- function to get to folder and save data ----------
 def process_parent_folder(parent_folder):
     parent_folder = os.path.abspath(parent_folder)
     results_root = os.path.join(os.path.dirname(parent_folder), RESULTS_ROOT)
@@ -349,7 +352,7 @@ def process_parent_folder(parent_folder):
 
                 print(f"    processed {fname}: pbodies={n_pb}, nuclei={n_nuc}, mito={n_mito}")
 
-            # optional: write per-medicine CSV to data_output_dir (existing)
+            # temptative: write per-medicine CSV to data_output_dir (if exists)
             med_csv = os.path.join(data_output_dir, f"{group_name}_{medicine_name}_analysis_distance.csv")
             if medicine_rows:
                 pd.DataFrame(medicine_rows).to_csv(med_csv, index=False)
@@ -357,7 +360,7 @@ def process_parent_folder(parent_folder):
                 cols = ["image", "pbody_number", "dist_nuclei", "dist_mito", "nuclei_std", "mito_std", "medicine", "group"]
                 pd.DataFrame(columns=cols).to_csv(med_csv, index=False)
 
-            # -------- SAVE PER-MEDICINE SUMMARY EXCEL --------
+            # -------- save in per=medicine summary file --------
             med_summary_xlsx = os.path.join(data_output_dir, f"{group_name}_{medicine_name}_summary.xlsx")
             if med_summary_rows:
                 pd.DataFrame(med_summary_rows).to_excel(med_summary_xlsx, index=False)
@@ -367,7 +370,7 @@ def process_parent_folder(parent_folder):
                         "mean_dist_mito", "std_dist_mito"]
                 pd.DataFrame(columns=cols).to_excel(med_summary_xlsx, index=False)
 
-    # -------- SAVE GLOBAL SUMMARY (all images) --------
+    # -------- save overall sumary of all images --------
     global_summary_xlsx = os.path.join(data_output_dir, "all_images_summary.xlsx")
     if all_summary_rows:
         pd.DataFrame(all_summary_rows).to_excel(global_summary_xlsx, index=False)
