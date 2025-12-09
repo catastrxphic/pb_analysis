@@ -1,3 +1,10 @@
+# Files to ignore
+/Users/camic.a/pb_analysis/analysis_pbody_distance.py
+/Users/camic.a/pb_analysis/analysis_pbody_distance.py
+/Users/camic.a/pb_analysis/data_analysis.ipynb
+/Users/camic.a/pb_analysis/figures.ipynb
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
