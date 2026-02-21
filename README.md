@@ -1,4 +1,3 @@
-Understood — here is a **final, polished, combined README** (Markdown) that covers **all three files** 
 # **PB Analysis - PB-scope-detection Continuation**
 
 ## **Introduction**
